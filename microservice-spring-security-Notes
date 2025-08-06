@@ -91,33 +91,6 @@ Encourage users to use strong, unique passwords (e.g., a combination of uppercas
 
 7. JWT (JSON Web Token)
 
- STEPS TO IMPLEMENT SPRING SECURITY :
-*****************************************
-
-FOR SINGUP/REGISTRATION :
-
-FOR ROLE-BASED LOGIN :
-
-
-
-
-
----------------------------
-
-✅ 3. Test Using Postman or curl
-🔹 Test with Postman
-Choose GET and enter:
-http://localhost:8080/api/v1/admin/welcome
-
-Go to Authorization tab
-Type: Basic Auth
-Username: admin
-Password: admin (assuming that's the encoded password in DB)
-
-Click Send.
-
-You should get a 200 OK and the "Welcome, Admin!" message if the role is correctly configured.
-----------------------------------------------------------------------------------------------------------------------
 
 Imnport Notes
 ############################
@@ -164,105 +137,589 @@ Answer:
 What is Signature?
 Answer: Secret key 
 
-####################################################
-Implementing JWT Token
-####################################################
-
-Download the dependency
-------------------------
-<dependency>
-    <groupId>com.auth0</groupId>
-    <artifactId>java-jwt</artifactId>
-    <version>4.4.0</version>
-</dependency>
 
 
-Create JWTService class
+🔐 Spring Security Login Flow (Role-based Authentication):
+***********************************************************
+
+[1] Postman /login (LoginDto: username/email + password)
+     |
+     v
+[2] UserController.userLogin()
+     |
+     v
+[3] AuthenticationManager.authenticate(
+        new UsernamePasswordAuthenticationToken(usernameOrEmail, password)
+    )
+     |
+     v
+[4] DaoAuthenticationProvider
+     |
+     v
+[5] CustomUserDetailsService.loadUserByUsername(usernameOrEmail)
+     |
+     v
+[6] CustomUserDetails (implements UserDetails)
+     |
+     v
+[7] AuthenticationManager compares input password (raw)
+       with stored password (encoded) via PasswordEncoder
+     |
+     v
+[8] If valid → Authenticated Authentication object
+     |
+     v
+[9] SecurityContextHolder.getContext().setAuthentication(auth)
+     |
+     v
+[10] Access roles via auth.getAuthorities()
+
+
+Summary :
+
+| Component                    | Responsibility                                    |
+| ---------------------------- | ------------------------------------------------- |
+| `LoginDto`                   | Input: username/email + password from Postman     |
+| `AuthenticationManager`      | Main gateway to trigger Spring Security auth      |
+| `DaoAuthenticationProvider`  | Validates credentials via DB                      |
+| `UserDetailsService`         | Loads user by username/email                      |
+| `UserDetails` (custom class) | Contains username, password, roles                |
+| `PasswordEncoder`            | Matches raw password with encoded password in DB  |
+| `SecurityContextHolder`      | Stores authentication info for use in app context |
+
+
+
+
+
+
+
+                                              PART :: 1  SECURITY IMPLEMENTATION.
+________________________________________________________________________________________________________________________________
+
+
+STEPS FOR SINGUP ROLE-BASED :
+******************************
+
+STEP-1 :
+
+ -> create User entity class :
+-------------------------------
+@Entity
+@Table(name="user")
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class User {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private long id;
+
+    @Column(name = "name", nullable = false)
+    private String name;
+
+    @Column(name = "username", nullable = false, unique = true)
+    private String username;
+
+    @Column(name = "email", nullable = false, unique = true)
+    private String email;
+
+    @Column(name = "password")
+    private String password;
+
+    @ElementCollection(fetch = FetchType.EAGER)
+    @CollectionTable(name = "user_roles", joinColumns = @JoinColumn(name = "user_id"))
+    @Enumerated(EnumType.STRING)
+    @Column(name = "role")
+    private Set<Roles> roles;
+
+}
+
+-> create Role enum class :
+------------------------------
+public enum Roles {
+
+    PATIENT,DOCTOR,ADMIN
+}
+
+STEP-2 :
+
+-> create user dto class :
 ---------------------------
-package com.authservice.jwt;
+@Data
+public class UserDTO {
 
-import java.util.Date;
-import org.springframework.stereotype.Service;
-import com.auth0.jwt.JWT;
-import com.auth0.jwt.algorithms.Algorithm;
+    private long id;
 
+    private String name;
+
+    private String username;
+
+    private String email;
+
+    private String password;
+
+    private Set<Roles> roles;
+
+}
+
+STEP-3 :
+
+-> create controller class :
+----------------------------
+@RestController
+@RequestMapping("/api/v1/auth/")
+public class AuthController {
+
+    @Autowired
+    private AuthService authService;
+
+    //    http://localhost:8085/api/v1/auth/register
+    @PostMapping("/register")
+    public ResponseEntity<APIResponse<String>> register(@RequestBody UserDTO dto) {
+        APIResponse<String> response = authService.register(dto);
+        return new ResponseEntity<>(response, HttpStatusCode.valueOf(response.getStatus()));
+    }
+}
+
+
+STEP-4 :
+
+-> create service class :
+-------------------------
+@Service
+public class AuthService {
+
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+
+    public APIResponse<String> register(UserDTO dto) {
+
+        if (userRepository.existsByUsername(dto.getUsername())) {
+            APIResponse<String> response = new APIResponse<>();
+            response.setMessage("Registration Failed");
+            response.setStatus(500);
+            response.setData("User with username exists");
+            return response;
+        }
+        if (userRepository.existsByEmail(dto.getEmail())) {
+            APIResponse<String> response = new APIResponse<>();
+            response.setMessage("Registration Failed");
+            response.setStatus(500);
+            response.setData("User with Email Id exists");
+            return response;
+        }
+
+        User user = new User();
+        BeanUtils.copyProperties(dto, user);
+        user.setPassword(passwordEncoder.encode(dto.getPassword()));
+        userRepository.save(user);
+
+        APIResponse<String> response = new APIResponse<>();
+        response.setMessage("Registration Done");
+        response.setStatus(201);
+        response.setData("User is registered");
+
+        return response;
+    }
+}
+
+
+STEP-5 :
+
+-> create repository :
+-----------------------
+public interface UserRepository extends JpaRepository<User,Long> {
+    boolean existsByUsername(String username);
+    boolean existsByEmail(String email);
+}
+
+STEP - 6 :
+
+-> create config class for by passing url :
+-------------------------------------------
+@Configuration
+@EnableWebSecurity
+public class AppSecurityConfig {
+
+    @Bean
+    public PasswordEncoder getEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+
+    String[] publicEndpoints = {
+            "/api/v1/auth/register",
+            "/api/v1/auth/login",
+            "/api/v1/auth/update-password",
+            "/v3/api-docs/**",
+            "/swagger-ui/**",
+            "/swagger-ui.html",
+            "/swagger-resources/**",
+            "/webjars/**",
+            "/actuator/**",
+            "/eureka/**"
+    };
+
+    @Bean
+    public SecurityFilterChain securityConfig(HttpSecurity http) throws Exception{
+
+        http.
+                csrf(cr->cr.disable())
+                .authorizeHttpRequests( req -> req
+                        .requestMatchers(publicEndpoints).permitAll()
+                        .anyRequest().authenticated()
+                );
+
+        return http.build();
+    }
+
+}
+
+
+Note : test through postman
+-> url : http://localhost:8085/api/v1/auth/register
+-> body :
+{
+  "name": "rahul",
+  "username": "rahulkumar",
+  "email": "rahul@example.com",
+  "password": "rahul123",
+  "roles": ["ADMIN", "PATIENT"]
+}
+-> Auth Type : Basic Auth
+
+
+
+
+
+STEPS FOR UPDATE PASSWORD :
+***************************
+
+
+STEP - 1 :
+
+-> Create dto class :
+-----------------------
+@Data
+public class UpdatePasswordDto {
+
+    private String email;
+    private String username;
+    private String newPassword;
+    private String oldPassword;
+
+}
+
+STEP-2 :
+-> Add below code in AuthController:
+------------------------------------
+    @PutMapping("/update-password")
+    public ResponseEntity<APIResponse<String>> updatePassword(@RequestBody UpdatePasswordDTO updatePasswordDto){
+        APIResponse<String> response = authService.setNewPassword(updatePasswordDto);
+        return new ResponseEntity<>(response, HttpStatusCode.valueOf(response.getStatus()));
+    }
+
+STEP-3 :
+-> Add below code in AuthService class :
+----------------------------------------
+public APIResponse<String> setNewPassword(UpdatePasswordDTO updatePasswordDto) {
+        if(!userRepository.existsByUsername(updatePasswordDto.getUsername())) {
+            APIResponse<String> response = new APIResponse<>();
+            response.setMessage("Failed");
+            response.setStatus(500);
+            response.setData("User with username doesnot exists");
+            return response;
+        }
+        if(!userRepository.existsByEmail(updatePasswordDto.getEmail())) {
+            APIResponse<String> response = new APIResponse<>();
+            response.setMessage("Failed");
+            response.setStatus(500);
+            response.setData("User with Email Id does not exists");
+            return response;
+        }
+
+        User user = userRepository.findByEmail(updatePasswordDto.getEmail());
+
+        if(BCrypt.checkpw(updatePasswordDto.getOldPassword(), user.getPassword())) {
+            user.setPassword(passwordEncoder.encode(updatePasswordDto.getNewPassword()));
+            userRepository.save(user);
+            APIResponse<String> response = new APIResponse<>();
+            response.setMessage("Done");
+            response.setStatus(200);
+            response.setData("User password is updated");
+            return response;
+        }
+
+        return null;
+    }
+
+
+Note : test through postman
+-> url : http://localhost:8085/api/v1/auth/update-password
+-> body :
+{
+    "email": "rahul@example.com",
+    "username": "rahulkumar",
+    "newPassword": "rahul246",
+    "oldPassword" : "rahul123"
+}
+-> Auth Type : Basic Auth
+
+
+
+
+
+
+STEPS FOR LOGIN ROLE-BASED :
+******************************
+
+STEP - 1 :
+
+-> create login dto class :
+---------------------------
+@Data
+public class LoginDto {
+    private String usernameOrEmail;
+    private String password;
+}
+
+STEP-2 :
+-> add below code in AuthController :
+-------------------------------------
+ @PostMapping("/login")
+    public ResponseEntity<APIResponse<String>> loginCheck(@RequestBody LoginDto loginDto) {
+        APIResponse<String> response = new APIResponse<>();
+
+        UsernamePasswordAuthenticationToken token =
+                new UsernamePasswordAuthenticationToken(loginDto.getUsernameOrEmail(), loginDto.getPassword());
+
+        try {
+            Authentication authenticate = authenticationManager.authenticate(token);
+
+            if (authenticate.isAuthenticated()) {
+                response.setMessage("Login Successful");
+                response.setStatus(200);
+                response.setData("Login success. Session started.");
+                return new ResponseEntity<>(response, HttpStatus.OK);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        response.setMessage("Failed");
+        response.setStatus(401);
+        response.setData("Un-Authorized Access");
+        return new ResponseEntity<>(response, HttpStatus.UNAUTHORIZED);
+    }
+
+
+STEP-3 :
+-> create bean of AuthenticationManager in Config class :
+------------------------------------------------------------
+   @Bean
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
+        return config.getAuthenticationManager();//Spring auto-wires authentication provider internally in SecurityFilterChain but needs to tell or manually do here
+    }
+
+
+STEP-4 :
+-> create bean of DaoAuthenticationProvider in Config class :
+------------------------------------------------------------
+    @Bean
+    public DaoAuthenticationProvider authenticationProvider(){
+        DaoAuthenticationProvider authenticationProvider = new DaoAuthenticationProvider();
+        authenticationProvider.setPasswordEncoder(getEncoder());
+        authenticationProvider.setUserDetailsService(customUserDetailsService); // custom class
+        return authenticationProvider;
+    }
+
+STEP-5 :
+-> create custom user details-service : 
+---------------------------------------
+@Service
+public class CustomUserDetailsService implements UserDetailsService {
+
+    @Autowired
+    private UserRepository userRepository;
+
+    @Override
+    public UserDetails loadUserByUsername(String usernameOrEmail) throws UsernameNotFoundException {
+        User user = userRepository.findByUsernameOrEmail(usernameOrEmail, usernameOrEmail)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found with username or email: " + usernameOrEmail));
+
+        return new CustomUserDetails(user);  // ⬅ wrap the user in a class implementing UserDetails
+    }
+}
+
+
+STEP-6 :
+-> create cutom user details :
+-------------------------------
+
+public class CustomUserDetails implements UserDetails {
+
+    private User user;
+
+    public CustomUserDetails(User user) {
+        this.user = user;
+    }
+
+    @Override
+    public Collection<? extends GrantedAuthority> getAuthorities() {
+        return user.getRoles().stream()
+                .map(roles -> new SimpleGrantedAuthority("Role_"+roles.name())).collect(Collectors.toList()); // Prefixing "ROLE_" is a common Spring Security convention
+    }
+
+    @Override
+    public String getPassword() {
+        return user.getPassword();
+    }
+
+    @Override
+    public String getUsername() {
+        return user.getUsername();
+    }
+}
+
+
+Note : test through postman
+-> url: http://localhost:8085/api/v1/auth/login
+-> body :
+{
+    "usernameOrEmail": "rahulkumar",
+    "password": "rahul246"
+}
+
+
+
+
+
+
+
+
+
+
+                                    PART :: 2  AFTER STORING AUTHENTICATION INFO IN SecurityContextHolder IMPLENTING JWT-TOKEN.
+______________________________________________________________________________________________________________________________________________________________________
+
+
+STEPS FOR GENERATING TOKEN  :
+*****************************
+
+STEP-1 :
+
+ -> Add these following dependencies :
+---------------------------------------
+
+<!-- JWT API and Utilities -->
+    <dependency>
+        <groupId>io.jsonwebtoken</groupId>
+        <artifactId>jjwt-api</artifactId>
+        <version>0.11.5</version>
+    </dependency>
+    <dependency>
+        <groupId>io.jsonwebtoken</groupId>
+        <artifactId>jjwt-impl</artifactId>
+        <version>0.11.5</version>
+        <scope>runtime</scope>
+    </dependency>
+    <dependency>
+        <groupId>io.jsonwebtoken</groupId>
+        <artifactId>jjwt-jackson</artifactId> <!-- or jjwt-gson if you use Gson -->
+        <version>0.11.5</version>
+        <scope>runtime</scope>
+    </dependency>
+
+
+
+STEPS-2 :
+-> Update login code of AuthController :
+----------------------------------------
+    // http://localhost:8085/api/v1/auth/login
+    @PostMapping("/login")
+    public ResponseEntity<APIResponse<String>> loginCheck(@RequestBody LoginDto loginDto) {
+        APIResponse<String> response = new APIResponse<>();
+
+        UsernamePasswordAuthenticationToken token =
+                new UsernamePasswordAuthenticationToken(loginDto.getUsernameOrEmail(), loginDto.getPassword());
+
+        try {
+            Authentication authenticate = authenticationManager.authenticate(token);
+
+            if (authenticate.isAuthenticated()) {
+                List<String> roles = authenticate.getAuthorities()
+                        .stream()
+                        .map(GrantedAuthority::getAuthority)
+                        .collect(Collectors.toList());
+                String jwtToken = jwtService.generateToken(loginDto.getUsernameOrEmail(), roles);
+
+                response.setMessage("Login Successful");
+                response.setStatus(200);
+                response.setData(jwtToken);
+                return new ResponseEntity<>(response, HttpStatus.OK);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        response.setMessage("Failed");
+        response.setStatus(401);
+        response.setData("Un-Authorized Access");
+        return new ResponseEntity<>(response, HttpStatus.UNAUTHORIZED);
+    }
+
+
+
+STEP-3 :
+-> create Custom JwtService class which contains logic for token generation & validation :
+------------------------------------------------------------------------------------------
 @Service
 public class JwtService {
 
-    private static final String SECRET_KEY = "my-super-secret-key";
+    // convert string key to proper SecretKey
+    private static final Key SECRET_KEY = Keys.hmacShaKeyFor("my-super-secret-key-which-is-strong-123456".getBytes());
     private static final long EXPIRATION_TIME = 86400000; // 1 day
 
-    public String generateToken(String username, String role) {
-        return JWT.create()
-            .withSubject(username)
-            .withClaim("role", role)
-            .withIssuedAt(new Date())
-            .withExpiresAt(new Date(System.currentTimeMillis() + EXPIRATION_TIME))
-            .sign(Algorithm.HMAC256(SECRET_KEY));
-    }
 
+    public String generateToken(String usernameOrEmail, List<String> roles) {
+        Map<String,Object> claims = new HashMap<>();
+        claims.put("roles",roles);
+
+        return Jwts.builder()
+        .setClaims(claims)
+        .setSubject(usernameOrEmail)
+        .setIssuedAt(new Date())
+        .setExpiration(new Date(System.currentTimeMillis()+EXPIRATION_TIME))
+        .signWith(SECRET_KEY, SignatureAlgorithm.HS256)
+        .compact();
+    }
+}
+
+
+STEPS FOR VALIDATING TOKEN  :
+*****************************
+
+STEP-4 :
+-> Add bellow code to validate token :
+--------------------------------------
     public String validateTokenAndRetrieveSubject(String token) {
-        return JWT.require(Algorithm.HMAC256(SECRET_KEY))
-            .build()
-            .verify(token)
-            .getSubject();
-    }
-}
-
-Modify AuthController  Class
---------------------------------
-
-@Autowired
-private JwtService jwtService;
-
-@PostMapping("/login")
-public ResponseEntity<APIResponse<String>> loginCheck(@RequestBody LoginDto loginDto) {
-    APIResponse<String> response = new APIResponse<>();
-
-    UsernamePasswordAuthenticationToken token = 
-        new UsernamePasswordAuthenticationToken(loginDto.getUsername(), loginDto.getPassword());
-
-    try {
-        Authentication authenticate = authManager.authenticate(token);
-        if (authenticate.isAuthenticated()) {
-            String jwtToken = jwtService.generateToken(loginDto.getUsername(),
-                authenticate.getAuthorities().iterator().next().getAuthority());
-
-            response.setMessage("Login Successful");
-            response.setStatus(200);
-            response.setData(jwtToken);  // return JWT
-            return new ResponseEntity<>(response, HttpStatusCode.valueOf(response.getStatus()));
-        }
-    } catch (Exception e) {
-        e.printStackTrace();
+        return Jwts.parserBuilder()
+                .setSigningKey(SECRET_KEY)
+                .build()
+                .parseClaimsJws(token)
+                .getBody()
+                .getSubject();
     }
 
-    response.setMessage("Failed");
-    response.setStatus(401);
-    response.setData("Unauthorized");
-    return new ResponseEntity<>(response, HttpStatusCode.valueOf(response.getStatus()));
-}
 
-Develop JWTFilter Class
------------------------------
-
-package com.authservice.jwt;
-
-import jakarta.servlet.FilterChain;
-import jakarta.servlet.ServletException;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
-import org.springframework.stereotype.Component;
-import org.springframework.web.filter.OncePerRequestFilter;
-
-import com.authservice.service.CustomerUserDetailsService;
-
-import java.io.IOException;
-
+STEP-5 :
+-> Create JwtFilter extends OncePerRequestFilter :
+--------------------------------------------------
 @Component
 public class JwtFilter extends OncePerRequestFilter {
 
@@ -296,85 +753,30 @@ public class JwtFilter extends OncePerRequestFilter {
     }
 }
 
-Modify Secuirty Config
----------------------------
 
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.authentication.AuthenticationProvider;
-import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
-import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
-import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
-import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
-import com.authservice.service.CustomerUserDetailsService;
-import com.authservice.service.JwtFilter;
+STEP-6 : 
+-> update security-filter-chain method in AppsecurityConfig class:
+------------------------------------------------------------------
+@Bean
+    public SecurityFilterChain securityConfig(HttpSecurity http) throws Exception{
 
-@Configuration
-@EnableWebSecurity
-public class AppSecurityConfig {
-	
-	@Autowired
-	private CustomerUserDetailsService customerUserDetailsService;
-	
-	@Autowired
-	private JwtFilter filter;
+        http.
+                csrf(cr->cr.disable())
+                .authorizeHttpRequests( req -> req
+                        .requestMatchers(publicEndpoints)
+                        .permitAll()
+                        .requestMatchers("/api/v1/admin/welcome").hasRole("ADMIN")
+                        .anyRequest()
+                        .authenticated())
+                .authenticationProvider(authenticationProvider())
+                .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
 
-    String[] publicEndpoints = {
-        "/api/v1/auth/register",
-        "/api/v1/auth/login",
-        "/api/v1/auth/update-password",
-        "/v3/api-docs/**",
-        "/swagger-ui/**",
-        "/swagger-ui.html",
-        "/swagger-resources/**",
-        "/webjars/**"
-    };
 
-    @Bean
-    public PasswordEncoder getEncoder() {
-        return new BCryptPasswordEncoder();
+        return http.build();
     }
-    
-    @Bean
-	public AuthenticationManager authManager(AuthenticationConfiguration config) throws Exception {
-		return config.getAuthenticationManager();
-	}
-    
-    @Bean
-	public AuthenticationProvider authProvider() {
-
-		DaoAuthenticationProvider authProvider = new DaoAuthenticationProvider();
-
-		authProvider.setUserDetailsService(customerUserDetailsService);
-		authProvider.setPasswordEncoder(getEncoder());
-
-		return authProvider;
-	}
-
-    @Bean
-	public SecurityFilterChain securityConfig(HttpSecurity http) throws Exception{
-		
-		http.authorizeHttpRequests( req -> {
-			req.requestMatchers(publicEndpoints)
-			   .permitAll()
-			   .requestMatchers("/api/v1/admin/welcome").hasRole("ADMIN")
-			   .anyRequest()
-			   .authenticated();			
-		}) .authenticationProvider(authProvider())
-        .addFilterBefore(filter, UsernamePasswordAuthenticationFilter.class);
-		
-		return http.csrf().disable().build();
-	}
 
 
-}
 
 
 
